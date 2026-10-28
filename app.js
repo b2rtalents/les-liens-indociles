@@ -277,3 +277,130 @@ async function block(id){const {error}=await sb.from('blocks').insert({blocker_i
 async function report(id){const reason=prompt('Motif : harcelement, contenu, usurpation, autre','autre');if(!reason)return;if(!['harcelement','contenu','usurpation','autre'].includes(reason)){alert('Motif non reconnu');return}
  const details=(prompt('Détails facultatifs pour les administrateurs','')||'').slice(0,1500);const {error}=await sb.from('reports').insert({reporter_id:me.id,target_id:id,reason,details});alert(error?'Signalement impossible : '+error.message:'Signalement enregistré.');}
 init();
+
+/* LES LIENS INDOCILES — CORRECTIF UNIQUE D'APERÇU ADMINISTRATEUR.
+   À ajouter APRÈS la ligne init(); du fichier app.js existant.
+   Ne crée ni membre ni message, et ne modifie aucune donnée Supabase. */
+const lliPreviewDemandee = new URLSearchParams(location.search).get('apercu') === '1';
+ui.preview = false; // Ne jamais accepter ?apercu=1 sans vérification serveur.
+ui.canPreview = false;
+
+const lliEntreeInitiale = enter;
+enter = async function () {
+  ui.preview = false;
+  await lliEntreeInitiale();
+  if (!ui.connected) return;
+  try {
+    const { data, error } = await sb.rpc('lli_is_preview_admin');
+    ui.canPreview = !error && data === true;
+  } catch (_) {
+    ui.canPreview = false; // En cas d'erreur : accès refusé.
+  }
+  if (lliPreviewDemandee && ui.canPreview) {
+    ui.preview = true;
+    page('explorer');
+  } else if (lliPreviewDemandee) {
+    const adresse = new URL(location.href);
+    adresse.searchParams.delete('apercu');
+    history.replaceState(null, '', adresse.toString());
+    notice('Aperçu réservé à l’administration : autorisation Supabase absente ou refusée.');
+  }
+};
+
+const lliExplorateurInitial = renderExplorer;
+renderExplorer = function () {
+  lliExplorateurInitial();
+  if (ui.preview) {
+    const menu = $('#intent');
+    menu.add(new Option('Toutes les intentions', ''), 0);
+    menu.value = '';
+    search(); // Les 40 profils, sans filtre à l’ouverture.
+  } else if (ui.canPreview) {
+    const bouton = document.createElement('button');
+    bouton.type = 'button';
+    bouton.id = 'lliAdminPreview';
+    bouton.className = 'secondary';
+    bouton.textContent = 'Aperçu administrateur · 40 profils';
+    bouton.onclick = () => {
+      ui.preview = true;
+      ui.active = null;
+      const adresse = new URL(location.href);
+      adresse.searchParams.set('apercu', '1');
+      history.replaceState(null, '', adresse.toString());
+      page('explorer');
+    };
+    $('#searchBtn').after(bouton);
+  }
+};
+
+// Utilise les coordonnées du membre lorsqu'elles existent ; sinon la ville.
+const lliDistanceInitiale = previewDistance;
+previewDistance = function (ville) {
+  const destination = previewCoords[ville];
+  const lat = Number(me?.latitude), lon = Number(me?.longitude);
+  if (!destination || me?.latitude == null || me?.longitude == null ||
+      !Number.isFinite(lat) || !Number.isFinite(lon)) return lliDistanceInitiale(ville);
+  const rad = Math.PI / 180;
+  const dLat = (destination[0] - lat) * rad;
+  const dLon = (destination[1] - lon) * rad;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat * rad) *
+    Math.cos(destination[0] * rad) * Math.sin(dLon / 2) ** 2;
+  return Math.round(12742 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+};
+
+const lliRechercheInitiale = search;
+search = async function () {
+  if (!ui.preview) return lliRechercheInitiale();
+  const intention = $('#intent').value;
+  const genre = $('#gender').value;
+  const ageMin = Number($('#ageMin').value) || 18;
+  const ageMax = Number($('#ageMax').value) || 99;
+  const rayon = Number($('#distance').value) || null;
+  const normaliser = s => String(s || '').normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+  const interets = new Set((me?.interests || []).map(normaliser));
+  const traits = new Set((me?.traits || []).map(normaliser));
+  const profils = intention ? previewFind({ intent: intention, gender: genre,
+    min: ageMin, max: ageMax, km: rayon }) : previewPeople
+    .filter(p => (!genre || p.gender === genre) && p.age >= ageMin && p.age <= ageMax &&
+      (!rayon || (previewDistance(p.city) != null && previewDistance(p.city) <= rayon)))
+    .map(p => ({ ...p, distance_km: previewDistance(p.city),
+      _score: p.interests.filter(x => interets.has(normaliser(x))).length * 2 +
+        p.traits.filter(x => traits.has(normaliser(x))).length }))
+    .sort((a, b) => b._score - a._score || a.nickname.localeCompare(b.nickname, 'fr'));
+  ui.list = profils;
+  const conteneur = $('#results');
+  conteneur.innerHTML = '';
+  for (const p of profils) {
+    const carte = document.createElement('article');
+    carte.className = 'profilecard';
+    carte.innerHTML = `<div class="cardcover"><div class="avatar">${esc(p.nickname[0])}</div></div>
+      <div class="cardbody">${previewFlag()}<h3>${esc(p.nickname)} · ${ageOf(p)} ans</h3>
+      <p>⌖ ${esc(p.city)}${p.distance_km != null ? ' · ' + p.distance_km + ' km' : ''}</p>
+      <div class="pillset">${p.interests.slice(0, 3).map(x => `<span class="pill">${esc(x)}</span>`).join('')}</div>
+      <p>${esc(p.bio.slice(0, 130))}</p>
+      <button class="secondary" type="button">Découvrir</button></div>`;
+    carte.querySelector('button').onclick = () => showMember(p);
+    conteneur.append(carte);
+  }
+  if (!profils.length) {
+    notice('Aucun profil fictif ne correspond aux filtres sélectionnés.', '#results');
+  }
+  $('#resultsStatus').textContent = `${profils.length} profil(s) fictif(s) — aperçu administrateur, sans données réelles.`;
+};
+
+const lliSurpriseInitiale = surprise;
+surprise = function () {
+  if (!ui.preview) return lliSurpriseInitiale();
+  if (!ui.list.length) {
+    $('#resultsStatus').textContent = 'Aucun profil fictif compatible avec les filtres.';
+    return;
+  }
+  showMember(ui.list[Math.floor(Math.random() * ui.list.length)]);
+};
+
+const lliMessagesInitiaux = renderMessages;
+renderMessages = function () {
+  if (ui.preview) return renderPreviewChat(ui.active?.fictif ? ui.active : previewPeople[0]);
+  return lliMessagesInitiaux();
+};
