@@ -89,12 +89,13 @@ function renderPreviewChat(p){
 }
 
 const alertAuth=txt=>{$('#authMessage').textContent=txt};
-const setSection=id=>{for(const n of ['publicHome','authPanel','app','setup'])$('#'+n).hidden=n!==id;};
+const setSection=id=>{for(const n of ['publicHome','authPanel','app','setup'])$('#'+n).hidden=n!==id;if(id!=='app')document.body.dataset.space=id==='authPanel'?'connexion':'public';};
 const ageOf=p=>p.birth_year ? new Date().getFullYear()-p.birth_year : null;
 const isAdult=p=>p.birth_year && ageOf(p)>=18;
 const mediaUrl=async(bucket,path)=>{if(!path)return null; const {data,error}=await sb.storage.from(bucket).createSignedUrl(path,3600);return error?null:data.signedUrl;};
 async function init(){
- const openAuth=(mode)=>{setSection('authPanel');$('#authTitle').textContent=mode==='signup'?'Créer mon compte':'Me connecter';$('#signUpBtn').classList.toggle('primary',mode==='signup');$('#signUpBtn').classList.toggle('secondary',mode!=='signup');$('#signInBtn').classList.toggle('primary',mode!=='signup');$('#signInBtn').classList.toggle('secondary',mode==='signup');alertAuth('');};
+ setSection('publicHome');$('#logoutBtn').hidden=true;$('#userBadge').textContent='';
+ const openAuth=(mode)=>{setSection('authPanel');$('#authTitle').textContent=mode==='signup'?'Créer mon compte':'Me connecter';$('#signUpBtn').classList.toggle('primary',mode==='signup');$('#signUpBtn').classList.toggle('secondary',mode!=='signup');$('#signInBtn').classList.toggle('primary',mode!=='signup');$('#signInBtn').classList.toggle('secondary',mode==='signup');$('#authPassword').value='';alertAuth('');$('#authEmail').focus();};
  $('#loginOpen').onclick=()=>openAuth('login');$('#signupOpen').onclick=()=>openAuth('signup');$('#backHome').onclick=()=>setSection('publicHome');
  $('#calmBtn').onclick=()=>{document.body.classList.toggle('calm');$('#calmBtn').setAttribute('aria-pressed',String(document.body.classList.contains('calm')))};
  $('#signInBtn').onclick=()=>auth(false);$('#signUpBtn').onclick=()=>auth(true);
@@ -106,11 +107,12 @@ async function init(){
  try{
    // Supabase JS v2, import explicite, depuis un CDN HTTPS réputé.
    const mod=await import('https://esm.sh/@supabase/supabase-js@2.57.4');
-   sb=mod.createClient(cfg.url,cfg.publishableKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
-   const {data,error}=await sb.auth.getSession();if(error)throw error;
-   session=data.session;
-   sb.auth.onAuthStateChange((_event,s)=>{ if(_event==='SIGNED_OUT'){session=null;setSection('publicHome')} });
-   if(session)await enter();else setSection('publicHome');
+   try {const ref=new URL(cfg.url).hostname.split('.')[0];localStorage.removeItem(`sb-${ref}-auth-token`);}catch(_){}
+   // Connexion explicite à chaque ouverture : session limitée à la page, jamais restaurée depuis le navigateur.
+   sb=mod.createClient(cfg.url,cfg.publishableKey,{auth:{persistSession:false,autoRefreshToken:true,detectSessionInUrl:true}});
+   session=null;ui.connected=false;ui.canPreview=false;ui.preview=false;
+   sb.auth.onAuthStateChange((event)=>{ if(event==='SIGNED_OUT'){session=null;ui.connected=false;ui.canPreview=false;ui.preview=false;$('#logoutBtn').hidden=true;$('#userBadge').textContent='';setSection('publicHome')} });
+   setSection('publicHome');
  }catch(e){setSection('publicHome');$('#loginOpen').disabled=true;$('#signupOpen').disabled=true;$('#availabilityInfo').textContent='Les inscriptions sont temporairement indisponibles. Réessaie ultérieurement.';}
 }
 async function auth(signup){
@@ -118,6 +120,7 @@ async function auth(signup){
  if(!email.includes('@')||password.length<10){alertAuth('Indique une adresse e-mail et un mot de passe d’au moins 10 caractères.');return}
  alertAuth('Connexion en cours…');
  const {data,error}=signup ? await sb.auth.signUp({email,password,options:{emailRedirectTo:location.origin+location.pathname}}) : await sb.auth.signInWithPassword({email,password});
+ $('#authPassword').value=''; // Ne pas conserver le mot de passe en mémoire dans le champ.
  if(error){alertAuth('Opération impossible : '+error.message);return}
  if(signup && !data.session){alertAuth('Si ton adresse est invitée, vérifie le courriel de confirmation avant de te connecter.');return}
  session=data.session;await enter();
@@ -139,7 +142,7 @@ async function enter(){
  setSection('app');await page(ui.preview?'explorer':'accueil');
 }
 function page(name){
-  ui.page=name;if(name!=='salons')ui.currentRoom=null;
+  ui.page=name;document.body.dataset.space=name;if(name!=='salons')ui.currentRoom=null;
   document.querySelectorAll('.tabs [data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===name));
   if(name==='accueil')renderHome();
   else if(name==='profil')renderProfile();
