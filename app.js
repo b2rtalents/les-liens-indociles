@@ -104,7 +104,7 @@ async function init(){
   if(cleaned)history.replaceState(null,'',current.pathname+current.search+current.hash);
  }catch(_){}
  setSection('publicHome');$('#logoutBtn').hidden=true;$('#userBadge').textContent='';
- const openAuth=(mode)=>{setSection('authPanel');$('#authTitle').textContent=mode==='signup'?'Créer mon compte':'Me connecter';$('#signUpBtn').classList.toggle('primary',mode==='signup');$('#signUpBtn').classList.toggle('secondary',mode!=='signup');$('#signInBtn').classList.toggle('primary',mode!=='signup');$('#signInBtn').classList.toggle('secondary',mode==='signup');$('#authPassword').value='';alertAuth('');$('#authEmail').focus();};
+ const openAuth=(mode)=>{setSection('authPanel');$('#authTitle').textContent=mode==='signup'?'Créer mon compte':'Me connecter';$('#signUpBtn').classList.toggle('primary',mode==='signup');$('#signUpBtn').classList.toggle('secondary',mode!=='signup');$('#signInBtn').classList.toggle('primary',mode!=='signup');$('#signInBtn').classList.toggle('secondary',mode==='signup');$('#authPassword').value='';$('#agreeRules').checked=false;$('#signupConsentWrap').style.display=mode==='signup'?'block':'none';alertAuth('');$('#authEmail').focus();};
  $('#loginOpen').onclick=()=>openAuth('login');$('#signupOpen').onclick=()=>openAuth('signup');$('#backHome').onclick=()=>setSection('publicHome');
  $('#calmBtn').onclick=()=>{document.body.classList.toggle('calm');$('#calmBtn').setAttribute('aria-pressed',String(document.body.classList.contains('calm')))};
  $('#signInBtn').onclick=()=>auth(false);$('#signUpBtn').onclick=()=>auth(true);
@@ -143,7 +143,7 @@ async function enter(){
  sb.from('blocks').select('blocked_id').eq('blocker_id',user.id),
  sb.from('lli_privacy_consents').select('romantic_preferences,notice_version').eq('user_id',user.id).maybeSingle()
  ]);
- if(e1||!profile){setSection('authPanel');alertAuth('Le profil n’a pas été initialisé. Signale le problème à l’administrateur.');return}
+ if(e1||!profile){setSection('authPanel');alertAuth(e1?'Le chargement sécurisé du profil a échoué. Réessaie après avoir actualisé la page.':'Le compte existe, mais son profil est absent. Contacte l’administrateur.');return}
  me=profile;prefs=pr||{};prefs.romantic_consent=consent?.romantic_preferences===true;blocked=new Set((bl||[]).map(x=>x.blocked_id));ui.connected=true;
   // Le serveur décide du statut administrateur ; l'URL seule ne donne aucun droit.
   try {const {data,error:adminError}=await sb.rpc('lli_is_preview_admin');ui.canPreview=!adminError&&data===true;}
