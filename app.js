@@ -92,8 +92,17 @@ const alertAuth=txt=>{$('#authMessage').textContent=txt};
 const setSection=id=>{for(const n of ['publicHome','authPanel','app','setup'])$('#'+n).hidden=n!==id;if(id!=='app')document.body.dataset.space=id==='authPanel'?'connexion':'public';};
 const ageOf=p=>p.birth_year ? new Date().getFullYear()-p.birth_year : null;
 const isAdult=p=>p.birth_year && ageOf(p)>=18;
-const mediaUrl=async(bucket,path)=>{if(!path)return null; const {data,error}=await sb.storage.from(bucket).createSignedUrl(path,3600);return error?null:data.signedUrl;};
+const mediaUrl=async(bucket,path)=>{if(!path)return null; const {data,error}=await sb.storage.from(bucket).createSignedUrl(path,600);return error?null:data.signedUrl;};
 async function init(){
+ // Pas d'ouverture automatique via un lien contenant une session : mot de passe requis.
+ try {
+  const current=new URL(location.href);
+  const sensitive=['code','access_token','refresh_token','error','error_description'];
+  let cleaned=false;
+  for(const key of sensitive){if(current.searchParams.has(key)){current.searchParams.delete(key);cleaned=true;}}
+  if(/(?:^#|[&#])(?:access_token|refresh_token|error)=/.test(current.hash)){current.hash='';cleaned=true;}
+  if(cleaned)history.replaceState(null,'',current.pathname+current.search+current.hash);
+ }catch(_){}
  setSection('publicHome');$('#logoutBtn').hidden=true;$('#userBadge').textContent='';
  const openAuth=(mode)=>{setSection('authPanel');$('#authTitle').textContent=mode==='signup'?'Créer mon compte':'Me connecter';$('#signUpBtn').classList.toggle('primary',mode==='signup');$('#signUpBtn').classList.toggle('secondary',mode!=='signup');$('#signInBtn').classList.toggle('primary',mode!=='signup');$('#signInBtn').classList.toggle('secondary',mode==='signup');$('#authPassword').value='';alertAuth('');$('#authEmail').focus();};
  $('#loginOpen').onclick=()=>openAuth('login');$('#signupOpen').onclick=()=>openAuth('signup');$('#backHome').onclick=()=>setSection('publicHome');
@@ -109,7 +118,7 @@ async function init(){
    const mod=await import('https://esm.sh/@supabase/supabase-js@2.57.4');
    try {const ref=new URL(cfg.url).hostname.split('.')[0];localStorage.removeItem(`sb-${ref}-auth-token`);}catch(_){}
    // Connexion explicite à chaque ouverture : session limitée à la page, jamais restaurée depuis le navigateur.
-   sb=mod.createClient(cfg.url,cfg.publishableKey,{auth:{persistSession:false,autoRefreshToken:true,detectSessionInUrl:true}});
+   sb=mod.createClient(cfg.url,cfg.publishableKey,{auth:{persistSession:false,autoRefreshToken:true,detectSessionInUrl:false}});
    session=null;ui.connected=false;ui.canPreview=false;ui.preview=false;
    sb.auth.onAuthStateChange((event)=>{ if(event==='SIGNED_OUT'){session=null;ui.connected=false;ui.canPreview=false;ui.preview=false;$('#logoutBtn').hidden=true;$('#userBadge').textContent='';setSection('publicHome')} });
    setSection('publicHome');
@@ -117,7 +126,8 @@ async function init(){
 }
 async function auth(signup){
  const email=$('#authEmail').value.trim().toLowerCase(),password=$('#authPassword').value;
- if(!email.includes('@')||password.length<10){alertAuth('Indique une adresse e-mail et un mot de passe d’au moins 10 caractères.');return}
+ if(!email.includes('@')||!password|| (signup&&password.length<10)){alertAuth(signup?'Indique une adresse e-mail et un mot de passe d’au moins 10 caractères.':'Indique ton adresse e-mail et ton mot de passe.');return}
+ if(signup&&!$('#agreeRules').checked){alertAuth('Prends connaissance des règles et confirme les avoir lues avant de créer ton compte.');return}
  alertAuth('Connexion en cours…');
  const {data,error}=signup ? await sb.auth.signUp({email,password,options:{emailRedirectTo:location.origin+location.pathname}}) : await sb.auth.signInWithPassword({email,password});
  $('#authPassword').value=''; // Ne pas conserver le mot de passe en mémoire dans le champ.
@@ -127,13 +137,14 @@ async function auth(signup){
 }
 async function enter(){
  const {data:{user},error}=await sb.auth.getUser();if(error||!user){setSection('authPanel');return}
- const [{data:profile,error:e1},{data:pr},{data:bl}]=await Promise.all([
- sb.from('profiles').select('*').eq('id',user.id).single(),
+ const [{data:profile,error:e1},{data:pr},{data:bl},{data:consent}]=await Promise.all([
+ sb.rpc('lli_get_my_profile'),
  sb.from('private_preferences').select('*').eq('user_id',user.id).maybeSingle(),
- sb.from('blocks').select('blocked_id').eq('blocker_id',user.id)
+ sb.from('blocks').select('blocked_id').eq('blocker_id',user.id),
+ sb.from('lli_privacy_consents').select('romantic_preferences,notice_version').eq('user_id',user.id).maybeSingle()
  ]);
  if(e1||!profile){setSection('authPanel');alertAuth('Le profil n’a pas été initialisé. Signale le problème à l’administrateur.');return}
- me=profile;prefs=pr||{};blocked=new Set((bl||[]).map(x=>x.blocked_id));ui.connected=true;
+ me=profile;prefs=pr||{};prefs.romantic_consent=consent?.romantic_preferences===true;blocked=new Set((bl||[]).map(x=>x.blocked_id));ui.connected=true;
   // Le serveur décide du statut administrateur ; l'URL seule ne donne aucun droit.
   try {const {data,error:adminError}=await sb.rpc('lli_is_preview_admin');ui.canPreview=!adminError&&data===true;}
   catch(_){ui.canPreview=false;}
@@ -379,7 +390,8 @@ function renderProfile(){
  <div class="twocol"><div class="panel"><h3>Affinités amoureuses (facultatif)</h3><p class="hint">Ces informations ne sont pas affichées publiquement et servent uniquement à vérifier la réciprocité des préférences.</p>
  <div class="checks seeking">${checks(['homme','femme','non-binaire','autre','non-précisé'],prefs.seeking_genders)}</div>
  <label>Âge minimum<input type="number" name="romantic_age_min" min="18" max="99" value="${prefs.romantic_age_min||18}"></label>
- <label>Âge maximum<input type="number" name="romantic_age_max" min="18" max="99" value="${prefs.romantic_age_max||99}"></label></div>
+ <label>Âge maximum<input type="number" name="romantic_age_max" min="18" max="99" value="${prefs.romantic_age_max||99}"></label>
+ <label class="privacy-consent"><input type="checkbox" name="romanticConsent" ${prefs.romantic_consent?'checked':''}> J’accepte expressément l’utilisation de mes préférences de genre pour le matching amoureux réciproque. Facultatif et révocable à tout moment. <a href="infos-legales.html#donnees-sensibles" target="_blank" rel="noopener">Comprendre ce traitement</a>.</label></div>
  <div class="panel"><h3>Photo et voix</h3><p class="hint">Photo authentique conseillée, sans nudité ni photo d’enfants. Les fichiers sont privés et nécessitent un accès membre.</p>
  <label>Photo principale (JPG, PNG ou WebP, optimisée avant envoi)<input id="profilePicture" type="file" accept="image/jpeg,image/png,image/webp"></label>
  <label>Extrait de voix (WebM, MP3, MP4 ou WAV, taille optimisée)<input id="profileVoice" type="file" accept="audio/webm,audio/mpeg,audio/mp4,audio/wav"></label>
@@ -395,13 +407,20 @@ function renderProfile(){
 async function saveProfile(e){e.preventDefault();const f=e.target;const get=n=>f.elements[n].value.trim();
  const year=Number(get('birth_year'))||null; if(!year||new Date().getFullYear()-year<18){$('#saveStatus').textContent='Espace réservé aux adultes. Indique une année de naissance valide.';return}
  const changes={nickname:get('nickname'),birth_year:year,gender:get('gender')||null,city:get('city'),postal_code:get('postal_code'),bio:get('bio'),interests:split(get('interests')),traits:split(get('traits')),ideal_weekend:get('ideal_weekend'),goals:[...f.querySelectorAll('.goals input:checked')].map(x=>x.value),voice_goals:[...f.querySelectorAll('.voicegoals input:checked')].map(x=>x.value),visible:f.elements['visible'].checked,updated_at:new Date().toISOString()};
- const seeking=[...f.querySelectorAll('.seeking input:checked')].map(x=>x.value);
+ const hasRomanticConsent=f.elements['romanticConsent'].checked;
+ const seeking=hasRomanticConsent?[...f.querySelectorAll('.seeking input:checked')].map(x=>x.value):[];
  if(+get('romantic_age_min')>+get('romantic_age_max')){$('#saveStatus').textContent='La tranche d’âge amoureuse n’est pas cohérente.';return}
- const {data,error}=await sb.from('profiles').update(changes).eq('id',me.id).select().single();
+ const {error}=await sb.from('profiles').update(changes).eq('id',me.id);
  if(error){$('#saveStatus').textContent='Échec de sauvegarde : '+error.message;return}
+ const {data,error:reloadError}=await sb.rpc('lli_get_my_profile');
+ if(reloadError||!data){$('#saveStatus').textContent='Profil enregistré, mais lecture sécurisée impossible : '+(reloadError?.message||'réessaie');return}
+ const saveConsent=()=>sb.from('lli_privacy_consents').upsert({user_id:me.id,romantic_preferences:hasRomanticConsent,notice_version:'2026-10-28',updated_at:new Date().toISOString()},{onConflict:'user_id'});
+ if(hasRomanticConsent){const {error:cError}=await saveConsent();if(cError){$('#saveStatus').textContent='Consentement non enregistré : '+cError.message;me=data;return}}
  const {error:pError}=await sb.from('private_preferences').update({seeking_genders:seeking,romantic_age_min:+get('romantic_age_min'),romantic_age_max:+get('romantic_age_max')}).eq('user_id',me.id);
- me=data;prefs={...prefs,seeking_genders:seeking,romantic_age_min:+get('romantic_age_min'),romantic_age_max:+get('romantic_age_max')};
- $('#userBadge').textContent=me.nickname;$('#saveStatus').textContent=pError?'Profil enregistré, mais préférences amoureuses non enregistrées : '+pError.message:'Profil enregistré.';
+ if(pError){$('#saveStatus').textContent='Profil enregistré, mais préférences non mises à jour : '+pError.message;me=data;return}
+ if(!hasRomanticConsent){const {error:cError}=await saveConsent();if(cError){$('#saveStatus').textContent='Préférences retirées, mais révocation non confirmée : '+cError.message;me=data;return}}
+ me=data;prefs={...prefs,seeking_genders:seeking,romantic_age_min:+get('romantic_age_min'),romantic_age_max:+get('romantic_age_max'),romantic_consent:hasRomanticConsent};
+ $('#userBadge').textContent=me.nickname;$('#saveStatus').textContent='Profil et choix de confidentialité enregistrés.';
 }
 async function geocode(){const f=$('#profileForm');const city=f.elements['city'].value.trim(),postal=f.elements['postal_code'].value.trim();
  if(!city){$('#saveStatus').textContent='Indique une commune d’abord.';return}
@@ -497,8 +516,60 @@ let recorder, chunks=[];async function startRecord(){if(!navigator.mediaDevices?
  try{const stream=await navigator.mediaDevices.getUserMedia({audio:true});const mime=['audio/webm;codecs=opus','audio/mp4'].find(t=>MediaRecorder.isTypeSupported(t));recorder=new MediaRecorder(stream,{...(mime?{mimeType:mime}:{}),audioBitsPerSecond:32000});chunks=[];recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onstop=()=>{const type=recorder.mimeType||'audio/webm';ui.media=new File(chunks,type.includes('mp4')?'vocal.m4a':'vocal.webm',{type:type.split(';')[0]});$('#chatAttachment').textContent='Vocal enregistré — prêt à envoyer';stream.getTracks().forEach(t=>t.stop())};recorder.start();$('#recordBtn').disabled=true;$('#stopBtn').disabled=false;$('#chatStatus').textContent='Enregistrement en cours (60 secondes max).';setTimeout(()=>{if(recorder?.state==='recording')stopRecord()},60000)}catch(e){$('#chatStatus').textContent='Autorisation micro refusée ou indisponible.'}}
 function stopRecord(){if(recorder?.state==='recording')recorder.stop();$('#recordBtn').disabled=false;$('#stopBtn').disabled=true}
 function renderSecurity(){
- $('#pageContent').innerHTML=`<div class="panel"><h2>Confidentialité et sécurité</h2><p>Ce cercle est réservé aux personnes invitées et majeures. L’adresse exacte, le diagnostic et l’orientation ne sont pas affichés dans les profils. Les préférences sentimentales ne sont utilisées que pour le matching réciproque.</p><p>Tu peux bloquer ou signaler un membre depuis sa fiche. Si tu souhaites effacer ton compte et tes données, contacte l’administrateur du site ; la suppression automatique autonome n'est pas encore développée.</p><p class="warn">Ne partage pas de donnée sensible ou intime dans tes échanges. Tu peux bloquer ou signaler un membre à tout moment.</p><h3>Membres bloqués</h3><p>${blocked.size} membre(s) bloqué(s).</p></div>`;
+ $('#pageContent').innerHTML=`<div class="contenttop"><div><h2>Confidentialité et sécurité</h2><p>Tu gardes le contrôle de ton profil, de tes préférences et de tes échanges.</p></div></div>
+ <div class="panel stack"><h3>Contrôler mes données</h3><p><a href="infos-legales.html#confidentialite" target="_blank" rel="noopener">Politique de confidentialité et RGPD</a> · <a href="infos-legales.html#regles" target="_blank" rel="noopener">Règles de la communauté</a></p>
+ <p>Les profils non visibles ne sont pas proposés aux autres membres. Les photos et vocaux peuvent être consultés selon les droits d’accès de la plateforme. Ne publie jamais de diagnostic ni d’information médicale dans un forum ou un salon.</p>
+ <button id="exportPrivacy" type="button" class="secondary">Exporter mes données en JSON</button><p class="hint">L’export comprend les données structurées accessibles depuis ton compte ; les fichiers photos et vocaux nécessitent une demande complémentaire.</p><p class="feedback" id="privacyExportStatus"></p></div>
+ <form id="privacyRequestForm" class="panel stack"><h3>Exercer mes droits RGPD</h3>
+ <p>Tu peux demander l’accès à tes données, leur rectification, la suppression de ton compte ou poser une question. Les demandes sont transmises à l’administration et traitées manuellement après vérification.</p>
+ <label>Type de demande<select id="privacyRequestKind" required><option value="access">Accéder à mes données</option><option value="rectification">Corriger mes données</option><option value="deletion">Supprimer mon compte et mes données</option><option value="other">Autre demande</option></select></label>
+ <label>Précisions facultatives<textarea id="privacyRequestText" maxlength="1500" placeholder="Explique ta demande sans communiquer de mot de passe ni de donnée médicale."></textarea></label>
+ <button class="primary" type="submit">Enregistrer ma demande</button><p id="privacyRequestStatus" class="feedback" role="status"></p>
+ <p class="hint">Une demande de suppression n’efface pas automatiquement le compte : la suppression sera effectuée après traitement de la demande et de ses fichiers stockés.</p></form>
+ <div class="panel"><h3>Mes blocages</h3><p>${blocked.size} membre(s) bloqué(s). Pour bloquer ou signaler un membre, ouvre sa fiche depuis Découvrir.</p></div>`;
+ $('#privacyRequestForm').onsubmit=submitPrivacyRequest;
+ $('#exportPrivacy').onclick=exportMyData;
 }
+async function submitPrivacyRequest(event){
+ event.preventDefault();
+ const target=$('#privacyRequestStatus');const kind=$('#privacyRequestKind').value;
+ const details=$('#privacyRequestText').value.trim();
+ if(!['access','rectification','deletion','other'].includes(kind)){target.textContent='Demande invalide.';return}
+ if(kind==='deletion'&&!confirm('Confirmer la demande de suppression de ton compte ? La suppression ne sera pas immédiate.'))return;
+ const {error}=await sb.from('lli_privacy_requests').insert({user_id:me.id,kind,details});
+ if(error){target.textContent='Demande non enregistrée : '+error.message;return}
+ target.textContent='Demande enregistrée. Elle sera examinée par l’administration.';
+ $('#privacyRequestText').value='';
+}
+async function exportMyData(){
+ const status=$('#privacyExportStatus');status.textContent='Préparation de ton export…';
+ const queries={
+  profil:()=>sb.rpc('lli_get_my_profile'),
+  preferences:()=>sb.from('private_preferences').select('*').eq('user_id',me.id),
+  consentements:()=>sb.from('lli_privacy_consents').select('*').eq('user_id',me.id),
+  blocages:()=>sb.from('blocks').select('*').eq('blocker_id',me.id),
+  signalements:()=>sb.from('reports').select('*').eq('reporter_id',me.id),
+  messages:()=>sb.from('messages').select('*').or(`sender_id.eq.${me.id},recipient_id.eq.${me.id}`),
+  sujets:()=>sb.from('community_topics').select('*').eq('author_id',me.id),
+  reponses:()=>sb.from('community_replies').select('*').eq('author_id',me.id),
+  messages_salons:()=>sb.from('community_room_messages').select('*').eq('author_id',me.id),
+  sorties:()=>sb.from('community_events').select('*').eq('creator_id',me.id),
+  participations:()=>sb.from('community_event_participants').select('*').eq('member_id',me.id),
+  demandes_rgpd:()=>sb.from('lli_privacy_requests').select('*').eq('user_id',me.id)
+ };
+ try{
+  const entries=await Promise.all(Object.entries(queries).map(async ([key,fn])=>{
+   const {data,error}=await fn();if(error)throw new Error(key+': '+error.message);
+   return [key,data];
+  }));
+  const doc={application:'LES LIENS INDOCILES',date_export:new Date().toISOString(),limite:'Données structurées accessibles ; fichiers médias non inclus dans ce JSON',...Object.fromEntries(entries)};
+  const blob=new Blob([JSON.stringify(doc,null,2)],{type:'application/json;charset=utf-8'});
+  const url=URL.createObjectURL(blob);const link=document.createElement('a');
+  link.href=url;link.download='mes_donnees_les_liens_indociles.json';document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+  status.textContent='Export généré localement. Conserve ce fichier dans un endroit privé.';
+ }catch(e){status.textContent='Export incomplet, aucun fichier remis : '+e.message}
+}
+
 async function block(id){const {error}=await sb.from('blocks').insert({blocker_id:me.id,blocked_id:id});if(error){alert('Blocage impossible : '+error.message);return}blocked.add(id);$('#modal').hidden=true;page('explorer')}
 async function report(id){const reason=prompt('Motif : harcelement, contenu, usurpation, autre','autre');if(!reason)return;if(!['harcelement','contenu','usurpation','autre'].includes(reason)){alert('Motif non reconnu');return}
  const details=(prompt('Détails facultatifs pour les administrateurs','')||'').slice(0,1500);const {error}=await sb.from('reports').insert({reporter_id:me.id,target_id:id,reason,details});alert(error?'Signalement impossible : '+error.message:'Signalement enregistré.');}
